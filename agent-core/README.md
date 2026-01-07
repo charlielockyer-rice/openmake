@@ -481,6 +481,371 @@ Only three runtime dependencies:
 }
 ```
 
+## API Reference
+
+### `createAgent(options)`
+
+Creates an agent instance.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `model` | `LanguageModelV1` | **required** | LLM model from `@ai-sdk/*` |
+| `cwd` | `string` | `process.cwd()` | Working directory for tools |
+| `tools` | `Tool.Definition[]` | `builtinTools` | Available tools |
+| `systemPrompt` | `string` | `BASE_SYSTEM_PROMPT` | System prompt for LLM |
+| `instructions` | `string` | `undefined` | Additional instructions appended to prompt |
+| `maxSteps` | `number` | `100` | Maximum tool call rounds |
+| `temperature` | `number` | `undefined` | LLM temperature |
+| `enableSubagents` | `boolean` | `false` | Add Task tool for sub-agents |
+| `enableDoomLoopDetection` | `boolean` | `false` | Detect stuck loops |
+| `doomLoopConfig` | `DoomLoopConfig` | `undefined` | Doom loop settings |
+| `enableCompaction` | `boolean` | `false` | Auto-summarize long contexts |
+| `compactionConfig` | `CompactionConfig` | `undefined` | Compaction settings |
+| `storage` | `Storage` | `undefined` | Session persistence adapter |
+| `sessionId` | `string` | auto-generated | Session identifier |
+
+### Agent Interface
+
+```typescript
+interface Agent {
+  readonly sessionId: string
+
+  // Streaming execution - yields events as they occur
+  run(message: string, options?: { abortSignal?: AbortSignal }): AsyncGenerator<AgentEvent>
+
+  // Simple execution - returns final result
+  runSimple(message: string): Promise<{ text: string; steps: number }>
+
+  // Persistence (no-op if no storage configured)
+  save(): Promise<void>
+  load(): Promise<boolean>  // Returns true if session was loaded
+}
+```
+
+### Events (Detailed)
+
+```typescript
+type AgentEvent =
+  | { type: "text-delta"; text: string }           // Streaming text chunk
+  | { type: "text-done"; text: string }            // Complete text block
+  | { type: "tool-call"; toolName: string; args: unknown }
+  | { type: "tool-result"; toolName: string; result: Tool.Result }
+  | { type: "tool-error"; toolName: string; error: string }
+  | { type: "step-done"; finishReason: string }    // "stop", "tool-calls", etc.
+  | { type: "compaction"; originalCount: number; newCount: number }
+  | { type: "doom-loop"; loopType: string; description: string }
+  | { type: "done"; messages: CoreMessage[]; steps: number }
+  | { type: "error"; error: Error }
+```
+
+### Tool Interface
+
+```typescript
+namespace Tool {
+  interface Context {
+    cwd: string              // Working directory
+    abort: AbortSignal       // Cancellation signal
+    metadata(input: {        // Report progress/metadata
+      title?: string
+      metadata?: Record<string, unknown>
+    }): void
+  }
+
+  interface Result {
+    title: string            // Short description (shown to user)
+    output: string           // Full output (sent back to LLM)
+    metadata: Record<string, unknown>  // Structured data
+  }
+
+  interface Definition<TParams extends z.ZodType = z.ZodType> {
+    id: string
+    description: string
+    parameters: TParams
+    execute(args: z.infer<TParams>, ctx: Context): Promise<Result>
+  }
+}
+```
+
+### Storage Interface
+
+```typescript
+interface Storage {
+  list(): Promise<string[]>                    // All session IDs
+  load(id: string): Promise<StoredSession | null>
+  save(session: StoredSession): Promise<void>
+  delete(id: string): Promise<void>
+}
+
+interface StoredSession {
+  id: string
+  createdAt: Date
+  updatedAt: Date
+  messages: CoreMessage[]
+  metadata?: Record<string, unknown>
+}
+```
+
+### Configuration Types
+
+```typescript
+interface DoomLoopConfig {
+  maxRepeatedCalls?: number   // Default: 3
+  maxRepeatedErrors?: number  // Default: 2
+  windowSize?: number         // Default: 10
+}
+
+interface CompactionConfig {
+  model: LanguageModelV1      // Inherited from agent if not set
+  maxTokens?: number          // Default: 100000
+  targetTokens?: number       // Default: 20000
+  cwd?: string                // Inherited from agent if not set
+}
+```
+
+### Exported Prompts
+
+| Export | Type | Description |
+|--------|------|-------------|
+| `BASE_SYSTEM_PROMPT` | `string` | Default system prompt |
+| `ANTHROPIC_PROMPT` | `string` | Optimized for Claude |
+| `BEAST_PROMPT` | `string` | Optimized for GPT-4/o1 |
+| `GEMINI_PROMPT` | `string` | Optimized for Gemini |
+| `EXPLORE_PROMPT` | `string` | Read-only exploration |
+| `EMBEDDED_PROMPT` | `string` | Microcontroller focus |
+| `COMPACTION_PROMPT` | `string` | Conversation summarization |
+
+### Exported Agent Types
+
+| Export | Description |
+|--------|-------------|
+| `BUILD_AGENT` | Primary coding agent (all tools) |
+| `EXPLORE_AGENT` | Read-only exploration (glob, grep, read, bash) |
+| `EMBEDDED_AGENT` | Microcontroller development (all tools) |
+| `COMPACTION_AGENT` | Summarization (read only) |
+| `AGENT_TYPES` | Array of all agent types |
+| `getAgentType(name)` | Get agent by name |
+| `filterToolsForAgent(tools, agent)` | Filter tools by agent permissions |
+
+---
+
+## Integration Patterns
+
+### Using Different Providers
+
+```typescript
+// Anthropic (Claude)
+import { anthropic } from "@ai-sdk/anthropic"
+const agent = createAgent({ model: anthropic("claude-sonnet-4-20250514") })
+
+// OpenAI (GPT-4)
+import { openai } from "@ai-sdk/openai"
+const agent = createAgent({
+  model: openai("gpt-4o"),
+  systemPrompt: BEAST_PROMPT,  // Use GPT-optimized prompt
+})
+
+// Google (Gemini)
+import { google } from "@ai-sdk/google"
+const agent = createAgent({
+  model: google("gemini-1.5-pro"),
+  systemPrompt: GEMINI_PROMPT,
+})
+
+// Amazon Bedrock
+import { bedrock } from "@ai-sdk/amazon-bedrock"
+const agent = createAgent({ model: bedrock("anthropic.claude-3-sonnet-20240229-v1:0") })
+```
+
+### HTTP Server with SSE Streaming
+
+```typescript
+// server.ts - Hono + Server-Sent Events
+import { Hono } from "hono"
+import { streamSSE } from "hono/streaming"
+import { createAgent, FileStorage } from "./src"
+import { anthropic } from "@ai-sdk/anthropic"
+
+const app = new Hono()
+
+// Store agents by session
+const storage = new FileStorage("./sessions")
+
+app.post("/chat", async (c) => {
+  const { message, sessionId } = await c.req.json()
+
+  const agent = createAgent({
+    model: anthropic("claude-sonnet-4-20250514"),
+    storage,
+    sessionId,
+    enableDoomLoopDetection: true,
+  })
+
+  await agent.load()
+
+  return streamSSE(c, async (stream) => {
+    for await (const event of agent.run(message)) {
+      await stream.writeSSE({
+        event: event.type,
+        data: JSON.stringify(event),
+      })
+    }
+  })
+})
+
+app.get("/sessions", async (c) => {
+  const sessions = await storage.list()
+  return c.json(sessions)
+})
+
+export default app
+```
+
+**Client-side consumption:**
+
+```typescript
+const eventSource = new EventSource("/chat")
+
+eventSource.addEventListener("text-delta", (e) => {
+  const { text } = JSON.parse(e.data)
+  appendToOutput(text)
+})
+
+eventSource.addEventListener("tool-call", (e) => {
+  const { toolName, args } = JSON.parse(e.data)
+  showToolCall(toolName, args)
+})
+
+eventSource.addEventListener("done", (e) => {
+  eventSource.close()
+})
+```
+
+### WebSocket Streaming
+
+```typescript
+// ws-server.ts
+import { createAgent } from "./src"
+import { anthropic } from "@ai-sdk/anthropic"
+
+const server = Bun.serve({
+  port: 3001,
+  fetch(req, server) {
+    if (server.upgrade(req)) return
+    return new Response("Upgrade failed", { status: 500 })
+  },
+  websocket: {
+    async message(ws, message) {
+      const { type, payload } = JSON.parse(message as string)
+
+      if (type === "run") {
+        const agent = createAgent({
+          model: anthropic("claude-sonnet-4-20250514"),
+          cwd: payload.cwd || process.cwd(),
+        })
+
+        for await (const event of agent.run(payload.message)) {
+          ws.send(JSON.stringify(event))
+        }
+      }
+    },
+  },
+})
+```
+
+### Cancellation with AbortController
+
+```typescript
+const controller = new AbortController()
+
+// Cancel after 30 seconds
+setTimeout(() => controller.abort(), 30000)
+
+// Or cancel on user action
+cancelButton.onclick = () => controller.abort()
+
+try {
+  for await (const event of agent.run(message, { abortSignal: controller.signal })) {
+    if (event.type === "text-delta") {
+      process.stdout.write(event.text)
+    }
+  }
+} catch (err) {
+  if (err.name === "AbortError") {
+    console.log("Agent cancelled")
+  }
+}
+```
+
+### Error Handling Patterns
+
+```typescript
+async function runWithRetry(agent: Agent, message: string, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const events: AgentEvent[] = []
+
+      for await (const event of agent.run(message)) {
+        events.push(event)
+
+        if (event.type === "error") {
+          throw event.error
+        }
+
+        if (event.type === "doom-loop") {
+          console.warn(`Doom loop detected: ${event.description}`)
+          // Agent will auto-inject intervention, continue
+        }
+      }
+
+      return events
+    } catch (error) {
+      if (attempt === maxRetries) throw error
+
+      console.log(`Attempt ${attempt} failed, retrying...`)
+      await new Promise(r => setTimeout(r, 1000 * attempt))
+    }
+  }
+}
+```
+
+### Multi-Session Management
+
+```typescript
+class SessionManager {
+  private agents = new Map<string, Agent>()
+  private storage = new FileStorage("./sessions")
+
+  async getOrCreate(sessionId: string): Promise<Agent> {
+    if (this.agents.has(sessionId)) {
+      return this.agents.get(sessionId)!
+    }
+
+    const agent = createAgent({
+      model: anthropic("claude-sonnet-4-20250514"),
+      storage: this.storage,
+      sessionId,
+      enableCompaction: true,
+      enableDoomLoopDetection: true,
+    })
+
+    await agent.load()
+    this.agents.set(sessionId, agent)
+    return agent
+  }
+
+  async listSessions(): Promise<string[]> {
+    return this.storage.list()
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    this.agents.delete(sessionId)
+    await this.storage.delete(sessionId)
+  }
+}
+```
+
+---
+
 ## For Other Claude Instances
 
 If you're a Claude instance tasked with building on this:
