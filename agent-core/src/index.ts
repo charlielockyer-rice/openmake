@@ -44,9 +44,28 @@ export {
   GrepTool,
 } from "./tools"
 export {
+  // Base prompts
   BASE_SYSTEM_PROMPT,
   ANTHROPIC_SYSTEM_PROMPT,
   createSystemPrompt,
+  // Agent types
+  type AgentType,
+  AGENT_TYPES,
+  BUILD_AGENT,
+  EXPLORE_AGENT,
+  EMBEDDED_AGENT,
+  COMPACTION_AGENT,
+  getAgentType,
+  filterToolsForAgent,
+  // Agent-specific prompts
+  EXPLORE_PROMPT,
+  EMBEDDED_PROMPT,
+  COMPACTION_PROMPT,
+  SUMMARY_PROMPT,
+  // Model-specific prompts
+  ANTHROPIC_PROMPT,
+  BEAST_PROMPT,
+  GEMINI_PROMPT,
 } from "./prompts"
 
 // Convenience types

@@ -10,7 +10,8 @@ Agent Core provides:
 
 - **The Loop**: An orchestration system that calls an LLM, executes tool calls, and repeats until the task is complete
 - **Built-in Tools**: File operations (read, write, edit), search (glob, grep), and shell commands (bash)
-- **System Prompts**: Optimized prompts for coding tasks
+- **Agent Types**: Predefined agent configurations (build, explore, embedded, etc.)
+- **Model-Specific Prompts**: Optimized prompts for Anthropic, OpenAI, and Gemini
 - **Streaming Events**: Real-time visibility into agent execution
 
 ## Architecture
@@ -24,22 +25,20 @@ Agent Core provides:
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                       AGENT CORE                             │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │                    THE LOOP                          │    │
-│  │  while not done:                                     │    │
-│  │    response = llm(messages, tools)                   │    │
-│  │    if tool_calls: execute and continue               │    │
-│  │    else: done                                        │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                              │                               │
-│              ┌───────────────┴───────────────┐              │
-│              ▼                               ▼              │
-│  ┌─────────────────────┐         ┌─────────────────────┐    │
-│  │   SYSTEM PROMPT     │         │      TOOLS          │    │
-│  │   Instructions for  │         │  bash, read, write  │    │
-│  │   the LLM           │         │  edit, glob, grep   │    │
-│  └─────────────────────┘         │  + your custom ones │    │
-│                                  └─────────────────────┘    │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │                    THE LOOP                              ││
+│  │  while not done:                                         ││
+│  │    response = llm(messages, tools)                       ││
+│  │    if tool_calls: execute and continue                   ││
+│  │    else: done                                            ││
+│  └─────────────────────────────────────────────────────────┘│
+│              │                               │               │
+│  ┌───────────▼───────────┐       ┌──────────▼──────────┐    │
+│  │   SYSTEM PROMPTS      │       │      TOOLS          │    │
+│  │  • Model-specific     │       │  bash, read, write  │    │
+│  │  • Agent-type         │       │  edit, glob, grep   │    │
+│  │  • Custom             │       │  + your custom ones │    │
+│  └───────────────────────┘       └─────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -53,8 +52,26 @@ Agent Core provides:
 
 ```bash
 # Install dependencies
+cd agent-core
 bun install
 ```
+
+### Testing Without a UI
+
+You can test the agent directly from the command line:
+
+```bash
+# Set your API key
+export ANTHROPIC_API_KEY=your-key-here
+
+# Run the example
+bun run examples/simple.ts "List the files in this directory"
+
+# Or run interactively
+bun run examples/simple.ts "Create a hello.txt file with 'Hello World'"
+```
+
+### Basic Usage
 
 ```typescript
 import { createAgent } from "./src"
@@ -67,7 +84,7 @@ const agent = createAgent({
 })
 
 // Run with streaming
-for await (const event of agent.run("Create a hello.txt file with 'Hello, World!'")) {
+for await (const event of agent.run("Create a hello.txt file")) {
   switch (event.type) {
     case "text-delta":
       process.stdout.write(event.text)
@@ -110,6 +127,47 @@ while (step < maxSteps) {
 }
 ```
 
+### Agent Types
+
+Agent types are predefined configurations with specific prompts and tool permissions:
+
+| Type | Purpose | Allowed Tools |
+|------|---------|---------------|
+| `build` | Primary coding agent | All tools |
+| `explore` | Read-only codebase exploration | glob, grep, read, bash |
+| `embedded` | Microcontroller development | All tools |
+| `compaction` | Summarize conversations | read only |
+
+```typescript
+import { EMBEDDED_AGENT, filterToolsForAgent, builtinTools } from "./src"
+
+const agent = createAgent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  systemPrompt: EMBEDDED_AGENT.prompt,
+  tools: filterToolsForAgent(builtinTools, EMBEDDED_AGENT),
+})
+```
+
+### Model-Specific Prompts
+
+Different prompts optimized for each LLM:
+
+| Prompt | Best For | Style |
+|--------|----------|-------|
+| `ANTHROPIC_PROMPT` | Claude models | Concise, tool-focused |
+| `BEAST_PROMPT` | GPT-4/o1 | Autonomous, thorough |
+| `GEMINI_PROMPT` | Gemini models | Structured, workflow-oriented |
+
+```typescript
+import { BEAST_PROMPT } from "./src"
+import { openai } from "@ai-sdk/openai"
+
+const agent = createAgent({
+  model: openai("gpt-4o"),
+  systemPrompt: BEAST_PROMPT,
+})
+```
+
 ### Tools
 
 Tools are defined with a simple interface:
@@ -128,7 +186,7 @@ const MyTool = Tool.define("my_tool", {
     return {
       title: "Short title",
       output: "Result to show the LLM",
-      metadata: { /* structured data for UI */ },
+      metadata: { /* structured data */ },
     }
   },
 })
@@ -145,35 +203,20 @@ const MyTool = Tool.define("my_tool", {
 | `glob` | Find files by pattern |
 | `grep` | Search file contents |
 
-### Custom Tools
+## Events
 
-Add your own tools:
+The agent emits these events during execution:
 
-```typescript
-import { createAgent, builtinTools, Tool } from "./src"
-import { z } from "zod"
-
-const FlashFirmware = Tool.define("flash_firmware", {
-  description: "Flash firmware to a connected microcontroller",
-  parameters: z.object({
-    hexFile: z.string().describe("Path to the .hex file"),
-    port: z.string().describe("Serial port (e.g., /dev/ttyUSB0)"),
-  }),
-  async execute(args, ctx) {
-    // Your implementation
-    return {
-      title: "Flashed firmware",
-      output: "Successfully flashed to device",
-      metadata: { port: args.port },
-    }
-  },
-})
-
-const agent = createAgent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  tools: [...builtinTools, FlashFirmware],
-})
-```
+| Event | Description |
+|-------|-------------|
+| `text-delta` | Partial text from the LLM |
+| `text-done` | Complete text block |
+| `tool-call` | LLM is calling a tool |
+| `tool-result` | Tool execution completed |
+| `tool-error` | Tool execution failed |
+| `step-done` | One LLM turn completed |
+| `done` | Agent finished |
+| `error` | Unrecoverable error |
 
 ## File Structure
 
@@ -192,38 +235,104 @@ agent-core/
 │   │   ├── glob.ts       # File pattern matching
 │   │   └── grep.ts       # Content search
 │   └── prompts/
-│       └── index.ts      # System prompts
+│       ├── index.ts      # Prompt exports
+│       └── agents.ts     # Agent types & model-specific prompts
+├── examples/
+│   └── simple.ts         # CLI example
 ├── package.json
 ├── tsconfig.json
 └── README.md
 ```
 
-## Events
+## Adding Custom Tools
 
-The agent emits these events during execution:
+```typescript
+import { createAgent, builtinTools, Tool } from "./src"
+import { z } from "zod"
 
-| Event | Description |
-|-------|-------------|
-| `text-delta` | Partial text from the LLM |
-| `text-done` | Complete text block |
-| `tool-call` | LLM is calling a tool |
-| `tool-result` | Tool execution completed |
-| `tool-error` | Tool execution failed |
-| `step-done` | One LLM turn completed |
-| `done` | Agent finished |
-| `error` | Unrecoverable error |
+// Define a custom tool
+const FlashFirmware = Tool.define("flash_firmware", {
+  description: "Flash firmware to a connected microcontroller",
+  parameters: z.object({
+    hexFile: z.string().describe("Path to the .hex file"),
+    port: z.string().describe("Serial port (e.g., /dev/ttyUSB0)"),
+  }),
+  async execute(args, ctx) {
+    // Your implementation here
+    return {
+      title: "Flashed firmware",
+      output: "Successfully flashed to device",
+      metadata: { port: args.port },
+    }
+  },
+})
+
+// Use it
+const agent = createAgent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  tools: [...builtinTools, FlashFirmware],
+})
+```
+
+## Creating a Simple Test UI
+
+Here's a minimal REPL for testing:
+
+```typescript
+// repl.ts
+import { createAgent } from "./src"
+import { anthropic } from "@ai-sdk/anthropic"
+import * as readline from "readline"
+
+const agent = createAgent({
+  model: anthropic("claude-sonnet-4-20250514"),
+})
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+})
+
+async function chat(message: string) {
+  for await (const event of agent.run(message)) {
+    if (event.type === "text-delta") {
+      process.stdout.write(event.text)
+    } else if (event.type === "tool-call") {
+      console.log(`\n[${event.toolName}]`)
+    }
+  }
+  console.log("\n")
+}
+
+function prompt() {
+  rl.question("> ", async (input) => {
+    if (input === "exit") {
+      rl.close()
+      return
+    }
+    await chat(input)
+    prompt()
+  })
+}
+
+console.log("Agent REPL (type 'exit' to quit)")
+prompt()
+```
+
+Run with: `bun run repl.ts`
 
 ## What's NOT Included
 
-This is intentionally minimal. OpenCode has many features that are **not** included here:
+This is intentionally minimal. OpenCode has many features **not** included here:
 
 - **Web UI / TUI**: Build your own interface
 - **Session persistence**: Messages are in-memory only
 - **Multiple providers**: Uses AI SDK, add providers as needed
 - **Permission system**: Tools run without approval
-- **Subagents**: Single agent only
-- **Context compaction**: No automatic summarization
+- **Subagents**: Single agent only (no task delegation)
+- **Context compaction**: No automatic summarization when context fills
 - **Branching/forking**: Linear conversation only
+- **Doom loop detection**: No automatic detection of stuck loops
 
 ## Dependencies
 
@@ -239,51 +348,21 @@ Only three runtime dependencies:
 }
 ```
 
-## Adapting for Your Use Case
+## For Other Claude Instances
 
-### 1. Add Domain-Specific Tools
+If you're a Claude instance tasked with building on this:
 
-```typescript
-// For embedded/maker work:
-const tools = [
-  ...builtinTools,
-  CompileTool,
-  FlashTool,
-  SerialMonitorTool,
-  ReadDatasheetTool,
-]
-```
+1. **The Loop** (`src/loop.ts`) is the core - study it first
+2. **Tools** follow a simple interface - see `src/tool.ts`
+3. **Prompts** are in `src/prompts/` - use agent-specific ones for specialized tasks
+4. **Events** are how you get visibility - always handle `text-delta` and `tool-call`
+5. **The AI SDK** handles LLM communication - you don't need to implement that
 
-### 2. Customize the System Prompt
-
-```typescript
-const agent = createAgent({
-  model,
-  systemPrompt: `You are an embedded systems expert.
-    You help with microcontroller programming, circuit debugging,
-    and firmware development.
-
-    When working with hardware:
-    - Always verify connections before flashing
-    - Use conservative clock speeds initially
-    - Check power supply voltage`,
-})
-```
-
-### 3. Wrap with Your UI
-
-```typescript
-// Express server example
-app.post("/agent", async (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream")
-
-  for await (const event of agent.run(req.body.message)) {
-    res.write(`data: ${JSON.stringify(event)}\n\n`)
-  }
-
-  res.end()
-})
-```
+Key things to understand:
+- The loop runs until `toolCalls.length === 0` (LLM says it's done)
+- Tools return `{ title, output, metadata }` - output goes back to LLM
+- System prompts significantly affect behavior - use model-specific ones
+- Streaming is built-in - handle events as they arrive
 
 ## License
 

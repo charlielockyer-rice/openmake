@@ -5,6 +5,28 @@
  * These can be customized or replaced entirely.
  */
 
+// Re-export agent types and model-specific prompts
+export {
+  // Agent types
+  type AgentType,
+  AGENT_TYPES,
+  BUILD_AGENT,
+  EXPLORE_AGENT,
+  EMBEDDED_AGENT,
+  COMPACTION_AGENT,
+  getAgentType,
+  filterToolsForAgent,
+  // Agent-specific prompts
+  EXPLORE_PROMPT,
+  EMBEDDED_PROMPT,
+  COMPACTION_PROMPT,
+  SUMMARY_PROMPT,
+  // Model-specific prompts
+  ANTHROPIC_PROMPT,
+  BEAST_PROMPT,
+  GEMINI_PROMPT,
+} from "./agents"
+
 /**
  * Base system prompt - works with most models
  */
