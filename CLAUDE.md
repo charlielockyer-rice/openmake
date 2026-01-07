@@ -4,7 +4,15 @@
 
 ### Running the Development Environment
 
-The web app requires **two servers** running simultaneously:
+The web app requires **two servers** running simultaneously. Use the combined command:
+
+```bash
+bun run dev:web
+```
+
+This starts both the backend API server (port 4096) and frontend dev server (port 3000). Then open http://localhost:3000 in your browser.
+
+**Or run them separately in two terminals:**
 
 **Terminal 1 - Backend API Server (port 4096):**
 ```bash
@@ -15,8 +23,6 @@ cd packages/opencode && bun run ./src/index.ts serve
 ```bash
 bun run --cwd packages/app dev
 ```
-
-Then open http://localhost:3000 in your browser.
 
 > **Note:** The `serve` command is not in package.json scripts. You must invoke it directly via the CLI entry point as shown above.
 
