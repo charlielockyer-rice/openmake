@@ -10,6 +10,7 @@ export { WriteTool, WRITE_DESCRIPTION } from "./write"
 export { EditTool, EDIT_DESCRIPTION } from "./edit"
 export { GlobTool, GLOB_DESCRIPTION } from "./glob"
 export { GrepTool, GREP_DESCRIPTION } from "./grep"
+export { createTaskTool, type TaskToolConfig } from "./task"
 
 import { BashTool } from "./bash"
 import { ReadTool } from "./read"

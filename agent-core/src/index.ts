@@ -42,6 +42,8 @@ export {
   EditTool,
   GlobTool,
   GrepTool,
+  createTaskTool,
+  type TaskToolConfig,
 } from "./tools"
 export {
   // Base prompts
@@ -68,12 +70,41 @@ export {
   GEMINI_PROMPT,
 } from "./prompts"
 
+// Storage
+export {
+  type Storage,
+  type StoredSession,
+  MemoryStorage,
+  FileStorage,
+  generateSessionId,
+} from "./storage"
+
+// Compaction
+export {
+  compactMessages,
+  needsCompaction,
+  estimateTokens,
+  type CompactionConfig,
+} from "./compaction"
+
+// Doom loop detection
+export {
+  checkDoomLoop,
+  createInterventionMessage,
+  type DoomLoopConfig,
+  type DoomLoopResult,
+} from "./doom-loop"
+
 // Convenience types
 import type { LanguageModelV1 } from "ai"
 import { Tool } from "./tool"
 import { runAgent, runAgentSimple, type AgentEvent, type AgentConfig } from "./loop"
-import { builtinTools } from "./tools"
-import { createSystemPrompt, BASE_SYSTEM_PROMPT } from "./prompts"
+import { builtinTools, createTaskTool } from "./tools"
+import { createSystemPrompt, BASE_SYSTEM_PROMPT, AGENT_TYPES } from "./prompts"
+import type { Storage, StoredSession } from "./storage"
+import { generateSessionId } from "./storage"
+import type { DoomLoopConfig } from "./doom-loop"
+import type { CompactionConfig } from "./compaction"
 
 /**
  * Simplified agent configuration
@@ -93,16 +124,36 @@ export interface CreateAgentOptions {
   maxSteps?: number
   /** Temperature for LLM */
   temperature?: number
+  /** Enable subagent Task tool. Default: false */
+  enableSubagents?: boolean
+  /** Enable doom loop detection. Default: false */
+  enableDoomLoopDetection?: boolean
+  /** Doom loop detection configuration */
+  doomLoopConfig?: DoomLoopConfig
+  /** Enable context compaction. Default: false */
+  enableCompaction?: boolean
+  /** Context compaction configuration */
+  compactionConfig?: Partial<CompactionConfig>
+  /** Optional storage for session persistence */
+  storage?: Storage
+  /** Session ID for persistence. Auto-generated if storage provided but no ID given */
+  sessionId?: string
 }
 
 /**
  * Agent instance with run methods
  */
 export interface Agent {
+  /** Session ID (for persistence) */
+  readonly sessionId: string
   /** Run the agent with streaming events */
   run(message: string, options?: { abortSignal?: AbortSignal }): AsyncGenerator<AgentEvent>
   /** Run the agent and return final result */
-  runSimple(message: string): Promise<{ text: string }>
+  runSimple(message: string): Promise<{ text: string; steps: number }>
+  /** Save session to storage (if storage configured) */
+  save(): Promise<void>
+  /** Load session from storage (if storage configured) */
+  load(): Promise<boolean>
 }
 
 /**
@@ -138,7 +189,31 @@ export function createAgent(options: CreateAgentOptions): Agent {
     instructions,
     maxSteps = 100,
     temperature,
+    enableSubagents = false,
+    enableDoomLoopDetection = false,
+    doomLoopConfig,
+    enableCompaction = false,
+    compactionConfig,
+    storage,
+    sessionId: providedSessionId,
   } = options
+
+  // Generate session ID if storage is provided but no ID given
+  const sessionId = providedSessionId ?? (storage ? generateSessionId() : "default")
+
+  // Build tool set
+  let finalTools = [...tools]
+  if (enableSubagents) {
+    // Add the Task tool for spawning sub-agents
+    const taskTool = createTaskTool({
+      model,
+      cwd,
+      agentTypes: AGENT_TYPES,
+      tools: builtinTools,
+      maxSteps: Math.floor(maxSteps / 2), // Sub-agents get half the steps
+    })
+    finalTools.push(taskTool)
+  }
 
   const finalSystemPrompt = systemPrompt ?? createSystemPrompt({
     basePrompt: BASE_SYSTEM_PROMPT,
@@ -146,33 +221,95 @@ export function createAgent(options: CreateAgentOptions): Agent {
     additionalInstructions: instructions,
   })
 
+  // Session state for persistence
+  let storedMessages: import("ai").CoreMessage[] = []
+  let metadata: Record<string, unknown> = {}
+
   return {
+    get sessionId() {
+      return sessionId
+    },
+
     async *run(message: string, runOptions?: { abortSignal?: AbortSignal }) {
       const config: AgentConfig = {
         model,
         systemPrompt: finalSystemPrompt,
-        tools,
+        tools: finalTools,
         cwd,
         maxSteps,
         temperature,
         abortSignal: runOptions?.abortSignal,
+        enableDoomLoopDetection,
+        doomLoopConfig,
+        enableCompaction,
+        compactionConfig,
       }
 
-      yield* runAgent(message, config)
+      // Add stored messages as context if we have them
+      // (The loop will handle them appropriately)
+
+      for await (const event of runAgent(message, config)) {
+        yield event
+        // Capture final messages for persistence
+        if (event.type === "done") {
+          storedMessages = event.messages
+        }
+      }
+
+      // Auto-save if storage configured
+      if (storage) {
+        await this.save()
+      }
     },
 
     async runSimple(message: string) {
       const config: AgentConfig = {
         model,
         systemPrompt: finalSystemPrompt,
-        tools,
+        tools: finalTools,
         cwd,
         maxSteps,
         temperature,
+        enableDoomLoopDetection,
+        doomLoopConfig,
+        enableCompaction,
+        compactionConfig,
       }
 
       const result = await runAgentSimple(message, config)
-      return { text: result.text }
+      storedMessages = result.messages
+
+      // Auto-save if storage configured
+      if (storage) {
+        await this.save()
+      }
+
+      return { text: result.text, steps: result.steps }
+    },
+
+    async save() {
+      if (!storage) return
+
+      const session: StoredSession = {
+        id: sessionId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        messages: storedMessages,
+        metadata,
+      }
+
+      await storage.save(session)
+    },
+
+    async load() {
+      if (!storage) return false
+
+      const session = await storage.load(sessionId)
+      if (!session) return false
+
+      storedMessages = session.messages
+      metadata = session.metadata ?? {}
+      return true
     },
   }
 }

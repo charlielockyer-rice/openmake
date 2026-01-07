@@ -20,6 +20,16 @@ import {
 } from "ai"
 import { z } from "zod"
 import { Tool } from "./tool"
+import {
+  checkDoomLoop,
+  createInterventionMessage,
+  type DoomLoopConfig,
+} from "./doom-loop"
+import {
+  compactMessages,
+  needsCompaction,
+  type CompactionConfig,
+} from "./compaction"
 
 /**
  * Events emitted during agent execution
@@ -31,7 +41,9 @@ export type AgentEvent =
   | { type: "tool-result"; toolName: string; result: Tool.Result }
   | { type: "tool-error"; toolName: string; error: string }
   | { type: "step-done"; finishReason: string }
-  | { type: "done"; messages: CoreMessage[] }
+  | { type: "compaction"; originalCount: number; newCount: number }
+  | { type: "doom-loop"; loopType: string; description: string }
+  | { type: "done"; messages: CoreMessage[]; steps: number }
   | { type: "error"; error: Error }
 
 /**
@@ -52,6 +64,14 @@ export interface AgentConfig {
   temperature?: number
   /** Abort signal for cancellation */
   abortSignal?: AbortSignal
+  /** Enable doom loop detection. Default: false */
+  enableDoomLoopDetection?: boolean
+  /** Doom loop detection configuration */
+  doomLoopConfig?: DoomLoopConfig
+  /** Enable context compaction. Default: false */
+  enableCompaction?: boolean
+  /** Context compaction configuration (model is taken from main config if not provided) */
+  compactionConfig?: Partial<CompactionConfig>
 }
 
 /**
@@ -76,6 +96,10 @@ export async function* runAgent(
     maxSteps = 100,
     temperature,
     abortSignal,
+    enableDoomLoopDetection = false,
+    doomLoopConfig,
+    enableCompaction = false,
+    compactionConfig,
   } = config
 
   // Convert our tool definitions to AI SDK format
@@ -211,8 +235,46 @@ export async function* runAgent(
 
       // Check if we're done (no tool calls = task complete)
       if (result.toolCalls.length === 0) {
-        yield { type: "done", messages }
+        yield { type: "done", messages, steps: step }
         return
+      }
+
+      // Doom loop detection
+      if (enableDoomLoopDetection) {
+        const doomCheck = checkDoomLoop(messages, doomLoopConfig)
+        if (doomCheck.detected) {
+          yield {
+            type: "doom-loop",
+            loopType: doomCheck.type!,
+            description: doomCheck.description!,
+          }
+          // Inject intervention message
+          const intervention = createInterventionMessage(doomCheck)
+          if (intervention) {
+            messages.push(intervention)
+          }
+        }
+      }
+
+      // Context compaction
+      if (enableCompaction) {
+        const maxTokens = compactionConfig?.maxTokens ?? 100000
+        if (needsCompaction(messages, maxTokens)) {
+          const originalCount = messages.length
+          const compacted = await compactMessages(messages, {
+            model,
+            cwd,
+            ...compactionConfig,
+          })
+          // Replace messages with compacted version
+          messages.length = 0
+          messages.push(...compacted)
+          yield {
+            type: "compaction",
+            originalCount,
+            newCount: messages.length,
+          }
+        }
       }
 
       // Continue the loop for more tool calls
@@ -235,9 +297,10 @@ export async function* runAgent(
 export async function runAgentSimple(
   userMessage: string,
   config: AgentConfig
-): Promise<{ text: string; messages: CoreMessage[] }> {
+): Promise<{ text: string; messages: CoreMessage[]; steps: number }> {
   let text = ""
   let finalMessages: CoreMessage[] = []
+  let steps = 0
 
   for await (const event of runAgent(userMessage, config)) {
     switch (event.type) {
@@ -246,11 +309,12 @@ export async function runAgentSimple(
         break
       case "done":
         finalMessages = event.messages
+        steps = event.steps
         break
       case "error":
         throw event.error
     }
   }
 
-  return { text, messages: finalMessages }
+  return { text, messages: finalMessages, steps }
 }
