@@ -7,6 +7,7 @@ import { Instance } from "../project/instance"
 
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
+import PROMPT_EMBEDDED from "./prompt/embedded.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
@@ -164,6 +165,15 @@ export namespace Agent {
           user,
         ),
         prompt: PROMPT_SUMMARY,
+      },
+      embedded: {
+        name: "embedded",
+        description: `Embedded systems agent for microcontroller development. Use this agent for ESP32, Arduino, STM32, and other microcontroller projects. Capable of creating PlatformIO projects, writing firmware, compiling, flashing devices, and monitoring serial output.`,
+        permission: PermissionNext.merge(defaults, user),
+        prompt: PROMPT_EMBEDDED,
+        options: {},
+        mode: "primary",
+        native: true,
       },
     }
 
