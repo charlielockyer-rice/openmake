@@ -1,0 +1,23 @@
+{
+  "name": "agent-core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Minimal agent harness extracted from OpenCode",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "example": "bun run ./examples/simple.ts"
+  },
+  "dependencies": {
+    "ai": "^4.0.0",
+    "@ai-sdk/anthropic": "^2.0.0",
+    "@ai-sdk/openai": "^2.0.0",
+    "zod": "^3.23.0",
+    "diff": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/diff": "^7.0.0",
+    "typescript": "^5.0.0"
+  }
+}
